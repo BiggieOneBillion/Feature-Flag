@@ -1,41 +1,58 @@
+// src/FeatureFlagService.API/Program.cs
+using FeatureFlagService.Application.Commands.UpsertFlag;
+using FeatureFlagService.Application.Interfaces;
+using FeatureFlagService.Application.Options;
+using FeatureFlagService.Domain.Interfaces;
+using FeatureFlagService.Infrastructure.Caching;
+using FeatureFlagService.Infrastructure.Persistence;
+using FeatureFlagService.Infrastructure.Persistence.Repositories;
+using Microsoft.EntityFrameworkCore;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+// ── Database ─────────────────────────────────────────────────────────
+builder.Services.AddDbContext<AppDbContext>(opts =>
+    opts.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// ── Configuration ────────────────────────────────────────────────────
+builder.Services.Configure<FeatureFlagOptions>(
+    builder.Configuration.GetSection("FeatureFlags"));
+
+// ── Caching (swap line below to switch In-Memory ↔ Redis) ─────────
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<IFeatureFlagCache, InMemoryFlagCache>();
+// Phase 2: comment above two lines, uncomment below:
+// builder.Services.AddStackExchangeRedisCache(o =>
+//     o.Configuration = builder.Configuration.GetConnectionString("Redis"));
+// builder.Services.AddSingleton<IFeatureFlagCache, RedisFlagCache>();
+
+// ── Repositories ─────────────────────────────────────────────────────
+builder.Services.AddScoped<IFeatureFlagRepository, FeatureFlagRepository>();
+
+// ── MediatR ──────────────────────────────────────────────────────────
+builder.Services.AddMediatR(cfg =>
+    cfg.RegisterServicesFromAssembly(typeof(UpsertFlagCommand).Assembly));
+
+// ── Web API ──────────────────────────────────────────────────────────
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+// Auto-run migrations on startup
+using (var scope = app.Services.CreateScope())
 {
-    app.MapOpenApi();
+    var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    if (context.Database.GetPendingMigrations().Any())
+    {
+        context.Database.Migrate();
+    }
 }
 
-app.UseHttpsRedirection();
-
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
+app.UseSwagger();
+app.UseSwaggerUI();
+app.UseAuthorization();
+app.MapControllers();
 
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
